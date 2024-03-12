@@ -1,13 +1,25 @@
 import argparse
+import pickle
 import random
 import numpy as np
 import rvo2
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 import os
 import os.path as osp
 from tqdm import tqdm
 from typing import List, Tuple
 
+dest_dict = {}
+
+
+def write_goals(self, out_file):
+    if not osp.isdir('./goals'):
+        os.makedirs('./goals')
+    if not osp.isdir('./goals/train'):
+        os.makedirs('./goals/train')
+    with open(osp.join('./goals/train', out_file) + '.pkl', 'wb') as f:
+        pickle.dump(dest_dict, f)
 
 class Trajectory(object):
     def __init__(self, data: List[List[Tuple[float, float]]]):
@@ -16,12 +28,19 @@ class Trajectory(object):
         :param data: data
         '''
         self.data = data
+        self.num_agents = len(data)
+
+        assert self.num_agents > 0, "no agnet in this scene"
+
 
     def pop(self, i):
         self.data[i].pop(0)
 
     def append(self, i, position):
         self.data[i].append(position)
+
+    def __getitem__(self, i):
+        return self.data[i]
 
     def are_smoothes(self):
         '''
@@ -53,14 +72,14 @@ class Trajectory(object):
                     plt.scatter(p1[0], p1[1], color='red', marker='X')
         return is_smooth
 
-    def dump_csv(self, output_file, count, frame, dest_dict = None, goals = None):
+    def dump_csv(self, output_file, count, frame, dest_dict=None, goals = None):
         '''
         Write trajectories
         :param trajectories: Trajectory instance
         :param output_file:  output file path
         :param count: pedestrians count
         :param frame: frame limit
-        :param dest_dict:
+        :param dest_dict: the destination of pedestrian given ID as the key of the dict
         :param goals: goals of the pedestrians
         :return: the last frame number
         '''
@@ -77,12 +96,87 @@ class Trajectory(object):
             for track in track_data:
                 f.write(track)
                 f.write('\n')
+        return last_frame
+
+    def visualize(self, fps, show = True, save = False,
+                  mode = None, video = True, out_file = None):
+        '''
+        visualize trajectories
+        '''
+        if not video:
+            for i, trajectory in enumerate(self.data):
+                trajectory = np.array(trajectory)
+                plt.plot(trajectory[:,0], trajectory[:, 1], label=f'ped {i}')
+            # plt.plot(self.data[:,0], self.data[:,1])
+            plt.legend(loc='upper right')
+            if mode == "trajnet":
+                plt.xlim(-15, 15)
+                plt.ylim(-15, 15)
+            else:
+                plt.xlim(-5, 5)
+                plt.ylim(-5, 5)
+            if show:
+                plt.show()
+                plt.close()
+        if video:
+            fig, ax = plt.subplots()
+            if mode == "trajnet":
+                ax.set_xlim(-15, 15)
+                ax.set_ylim(-15, 15)
+            else:
+                ax.set_xlim(-5, 5)
+                ax.set_ylim(-5, 5)
+
+
+            premitive_list = [ax.plot([], [])[0] for _ in range(self.num_agents)]
+
+            def init():
+                [premitive_list[i].set_data([], []) for i in range(len(premitive_list))]
+                return premitive_list
+
+            def ani_func(frame):
+                # print(frame)
+                for i, trajectory in enumerate(self.data):
+                    trajectory = np.array(trajectory)
+                    x = trajectory[:frame+1, 0]
+                    y = trajectory[:frame+1, 1]
+                    # print(len(x), '\n')
+                    # print(x)
+                    premitive_list[i].set_xdata(x)
+                    premitive_list[i].set_ydata(y)
+
+                if frame == len(self.data[0]):
+                    plt.close('all')
+
+                return premitive_list
+
+            ani = animation.FuncAnimation(fig, ani_func, init_func=init,
+                                          frames=len(self.data[0])+1, interval=30,
+                                          blit=False)
+            # artists = []
+            # for i in range(1, self.num_frame+1):
+            #     artist = []
+            #     for trajectory in self.data:
+            #         trajectory = np.array(trajectory)
+            #         artist.append(plt.plot(trajectory[:i, 0], trajectory[:i, 1])[0])
+            #     artists.append(artist)
+            # ani = animation.ArtistAnimation(fig = fig, artists=artists, interval=1 / fps, repeat=False, blit=False)
+            if show:
+                plt.show()
+                # plt.close(fig)
+            if save:
+                writer = animation.FFMpegWriter(fps = fps, extra_args=['-vcodec', 'libx264'])
+                ani.save(filename=out_file, writer=writer)
+
+
+
+
 
 
 
 class Scene(object):
 
-    def __init__(self, num_ped, name = "circle_crossing", sim = None, mode = None, seed = 42):
+    def __init__(self, num_ped, name = "circle_crossing", sim = None, mode = "trajnet", seed = 42):
         # store the arguments
         self.sim = sim
         self.name = name
@@ -152,6 +246,12 @@ class Scene(object):
 
         return trajectories, valid, goals
 
+    # TODO: SFM trajectory generation
+    def generate_sfm_trajectory(self, ):
+        if self.name == "circle_crossing":
+            pass
+        else:
+            raise NotImplementedError
 
     def generate_circle_crossing(self, radius = 4):
         '''
@@ -244,6 +344,13 @@ def main():
                   + str(num_scenes) + 'scenes_' \
                   + '.txt'
 
+    video_output_file = output_dir \
+                        + args.simulator + '_' \
+                        + args.simulation_scene + '_' \
+                        + str(num_ped) + 'ped_' \
+                        + str(num_scenes) + 'scenes_' \
+                        + '.mp4'
+
     goal_filename = args.simulator + '_' \
                     + args.simulation_scene + '_' \
                     + str(num_ped) + 'ped_' \
@@ -254,21 +361,19 @@ def main():
         os.remove(output_file)
 
     count = 0  # pedestrian count
-    last_frame = -5 # frame count
+    last_frame = 0 # frame count
     dest_dict = {}  # path to store the description of dataset
-
 
     with tqdm(total=num_scenes) as pbar:
         for i in range(num_scenes):
             if mode == "trajnet":
                 num_ped = random.choice([4, 5, 6])
             if i % 10 == 0:
-                pbar.set_description(f'round {i+1} simulation')
+                pbar.set_description(f'Episode {i+1}')
             # generation
             scene = Scene(num_ped)  # scene
             if args.simulator == "orca":
                 trajectories, valid, goals = scene.generate_orca_trajectory(min_dist, react_time)
-            # TODO SFM
 
             elif args.simulator == 'social_force':
                 pass
@@ -276,8 +381,9 @@ def main():
             else:
                 raise NotImplementedError
 
-            # TODO visualizing the scene
             # Visualizing scenes
+            if i % 45 == 0:
+                trajectories.visualize(4, mode=scene.mode, out_file=video_output_file)
 
             # write the scene in csv format if valid
             if valid:
@@ -287,8 +393,20 @@ def main():
                                                    dest_dict=dest_dict,
                                                    goals=goals)
             count += num_ped
-            pbar.set_postfix({'valid or not': 'valid' if valid else 'invalid'})
+            pbar.set_postfix({'valid': 'valid' if valid else 'invalid',
+                              'ped': count,
+                              'frame': last_frame
+                              })
             pbar.update(1)
+
+    write_goals(goal_filename)
+
+    print(f'ORCA trajectories stored at: {output_file}')
+    print(f'Goal information stored at: goal_files/train/{goal_filename}.pkl \n \n')
+
+    print(f'You can convert this trajectories into TrajNet++ format using the following command \n')
+    print(f'python -m trajnetdataset.convert --direct --synthetic --mode trajnet --linear_threshold 0.3 --acceptance 0.0 0.0 1.0 0.0 \
+                --orca_file {output_file} --goal_file goal_files/train/{goal_filename}.pkl --output_filename orca_synthetic')
 
 if __name__ == "__main__":
     main()
